@@ -1,0 +1,550 @@
+* Sequelize: ORM
+
+Pour gérer les connexions à une base de données relationnelles, nous allons
+utiliser une librairie réalisant un [[https://fr.wikipedia.org/wiki/Mapping_objet-relationnel][mapping objet-relationnel]], ou ORM pour
+Object Relationnal Mapping en anglais.
+
+Le principe est d'associer une classe d'objets à une table. 
+Un objet instance de la classe correspond alors à une ligne de la table.
+
+La classe fournit des accesseurs sur les objets, correspondant aux colonnes de
+la table.
+
+Par exemple, la classe `User` est associée à la table `users`.
+Si la table contient les colonnes `id`, de type entier, et `mail`, de type
+chaîne de caractère, alors la classe fournit les accesseurs `id` et `mail` sur 
+les objets instances de la classe.
+
+Un ORM fournit généralement un outillage suffisant dans les cas simples pour
+générer les requêtes SQL classiques sur une table:
+
+- `SELECT` 
+- `INSERT`
+- `UPDATE`
+
+* Présentation de sequelize
+
+[[http://docs.sequelizejs.com/en/v3/docs/models-usage/][Sequelize]] est un ORM pour node.js, qui supporte mysql, postgresql, sqlite3 et
+mssql.
+
+** Installation
+
+On utilise npm, pour installer sequelize et également l'une des librairies
+en fonction du SGBD utilisé:
+
+#+BEGIN_SRC shell
+$ npm install --save sequelize
+
+# et un au choix parmi:
+$ npm install --save pg pg-hstore
+$ npm install --save mysql // For both mysql and mariadb dialects
+$ npm install --save sqlite3
+$ npm install --save tedious // MSSQL
+#+END_SRC
+
+On va également utiliser un outil en ligne de commande pour gérer la création
+des schéma des tables:
+
+#+BEGIN_SRC shell
+# installe la commande sequelize
+$ npm install -g sequelize-cli
+#+END_SRC
+
+* Connexion à la base
+Pour ce tutoriel, nous allons utiliser sqlite3, une base de données sans
+serveur.
+
+Pour l'installer sous debian/ubuntu:
+
+#+BEGIN_SRC shell
+sudo apt-get install sqlite3
+#+END_SRC
+
+La configuration de la connexion va ici consister uniquement à spécifier le
+chemin du fichier qui va contenir la base.
+
+Créer le fichier ~.sequelizerc~ avec le contenu suivant:
+
+#+BEGIN_SRC javascript
+var path = require('path');
+
+module.exports = {
+  'config': path.resolve('./db', 'config.json'),
+  'migrations-path': path.resolve('./db', 'migrations'),
+  'models-path': path.resolve('./lib', 'models'),
+  'seeders-path': path.resolve('./db', 'seeders')
+}
+#+END_SRC
+
+Puis générez la configuration avec:
+
+#+BEGIN_SRC shell
+sequelize init
+#+END_SRC
+
+Reste à adapter le fichier ~db/config.json~ en fonction du SGBD utilisé, ici
+sqlite3:
+
+#+BEGIN_SRC json
+{
+  "development": {
+    "storage": "./db/development.sqlite",
+    "dialect": "sqlite"
+  },
+  "test": {
+    "dialect": "sqlite",
+    "storage": ":memory"
+  },
+  "production": {
+    "username": "root",
+    "password": null,
+    "database": "database_production",
+    "host": "127.0.0.1",
+    "dialect": "mysql"
+  }
+}
+#+END_SRC
+
+3 bases différentes sont définies, une par environnement: development, test,
+production. Nous allons juste nous servir de la base «development».
+
+Le code gérant la connexion est dans le module ~lib/models/index.js~:
+
+#+BEGIN_SRC javascript
+'use strict';
+
+var fs        = require('fs');
+var path      = require('path');
+var Sequelize = require('sequelize');
+var basename  = path.basename(module.filename);
+var env       = process.env.NODE_ENV || 'development';
+var config    = require(__dirname + '/../../db/config.json')[env];
+var db        = {};
+
+if (config.use_env_variable) {
+  var sequelize = new Sequelize(process.env[config.use_env_variable]);
+} else {
+  var sequelize = new Sequelize(config.database, config.username, config.password, config);
+}
+
+fs
+  .readdirSync(__dirname)
+  .filter(function(file) {
+    return (file.indexOf('.') !== 0) && (file !== basename) && (file.slice(-3) === '.js');
+  })
+  .forEach(function(file) {
+    var model = sequelize['import'](path.join(__dirname, file));
+    db[model.name] = model;
+  });
+
+Object.keys(db).forEach(function(modelName) {
+  if (db[modelName].associate) {
+    db[modelName].associate(db);
+  }
+});
+
+db.sequelize = sequelize;
+db.Sequelize = Sequelize;
+
+module.exports = db;
+#+END_SRC
+
+1. lecture du fichier ~db/config.json~
+2. création de la connexion par appel de ~Sequelize~
+3. on retourne le résultat dans le symbole exporté par le module.
+
+Pour se connecter et manipuler la base de données, il suffira d'inclure ce
+module dans votre code.
+
+* Schéma: définition et création des tables
+
+Créons une table représentant des personnes, et une autre représentant des
+tâches. Chaque personne va avoir plusieurs tâches.
+
+#+BEGIN_SRC shell
+sequelize model:create --name User --attributes "email:string"
+#+END_SRC
+
+Les commandes ~model:create~ créent un fichier migration, représentant la mise à jour
+à faire sur le schéma de la base de données.
+
+Exemple pour la table users:
+
+#+BEGIN_SRC javascript
+'use strict';
+module.exports = {
+  up: function(queryInterface, Sequelize) {
+    return queryInterface.createTable('Users', {
+      id: {
+        allowNull: false,
+        autoIncrement: true,
+        primaryKey: true,
+        type: Sequelize.INTEGER
+      },
+      email: {
+        type: Sequelize.STRING
+      },
+      createdAt: {
+        allowNull: false,
+        type: Sequelize.DATE
+      },
+      updatedAt: {
+        allowNull: false,
+        type: Sequelize.DATE
+      }
+    });
+  },
+  down: function(queryInterface, Sequelize) {
+    return queryInterface.dropTable('Users');
+  }
+};
+#+END_SRC
+On voit que la table créé sera ~Users~, avec les champs ~id~, ~email~,
+~createdAt~ et ~updatedAt~.
+
+~model.create~ crée également un fichier dans ~lib/models~. Toujours pour
+~users~, ce sera ~lib/models/user.js~:
+
+#+BEGIN_SRC javascript
+'use strict';
+module.exports = function(sequelize, DataTypes) {
+  var User = sequelize.define('User', {
+    email: DataTypes.STRING
+  }, {
+    classMethods: {
+      associate: function(models) {
+        // associations can be defined here
+      }
+    }
+  });
+  return User;
+};
+#+END_SRC
+
+Créons maintenant la table Todos, dont une des colonnes va référencer l'id de la
+table users:
+
+#+BEGIN_SRC shell
+sequelize model:create --name Todo --attributes "title:string, complete:boolean,UserId:integer"
+#+END_SRC
+
+Pour coder l'assocation entre utilisateur et tâches, cela se passe dans les
+modèles javascript.
+
+Adapter les fichiers ~lib/models/user.js~ et ~lib/models/todo.js~:
+
+#+BEGIN_SRC javascript
+// lib/models/user.js
+'use strict'
+module.exports = function(sequelize, DataTypes) {
+  var User = sequelize.define('User', {
+    email: DataTypes.STRING
+  }, {
+    classMethods: {
+      associate: function(models) {
+        User.hasMany(models.Todo)
+      }
+    }
+  })
+  return User
+}
+#+END_SRC
+
+Pour ~todo.js~, on spécifie également une valeur par défaut pour le champ
+~complete~:
+
+#+BEGIN_SRC javascript
+// lib/models/todo.js
+'use strict'
+module.exports = function(sequelize, DataTypes) {
+  var Todo = sequelize.define('Todo', {
+    title: DataTypes.STRING,
+    complete: { 
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    }
+    UserId: DataTypes.INTEGER
+  }, {
+    classMethods: {
+      associate: function(models) {
+        Todo.belongsTo(models.User)
+      }
+    }
+  })
+  return Todo
+}
+#+END_SRC
+
+
+Pour créer les tables, il faut appliquer les migrations, et donc [[http://docs.sequelizejs.com/en/latest/docs/schema/][synchroniser]] la
+base de donnée avec la description javascript des fichiers ~lib/models/*.js~.
+ 
+
+#+BEGIN_SRC shell
+$ sequelize db:migrate
+
+Sequelize [Node: 6.9.0, CLI: 2.4.0, ORM: 3.25.0]
+
+Loaded configuration file "db/config.json".
+Using environment "development".
+== 20161116030820-create-user: migrating =======
+== 20161116030820-create-user: migrated (0.069s)
+== 20161116031206-create-todo: migrating =======
+== 20161116031206-create-todo: migrated (0.052s)
+#+END_SRC
+
+Le fichier ~db/development.sqlite~ contenant la base est créé. On peut regarder
+son contenu avec l'utilitaire ~sqlite3~:
+
+#+BEGIN_SRC shell
+sqlite3 db/development.sqlite
+sqlite> .schema
+CREATE TABLE `SequelizeMeta` (`name` VARCHAR(255) NOT NULL UNIQUE PRIMARY KEY, UNIQUE (name));
+CREATE TABLE `Users` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `email` VARCHAR(255), `createdAt` DATETIME NOT NULL, `updatedAt` DATETIME NOT NULL);
+CREATE TABLE `Todos` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `title` VARCHAR(255), `complete` TINYINT(1), `UserId` INTEGER, `createdAt` DATETIME NOT NULL, `updatedAt` DATETIME NOT NULL);
+#+END_SRC
+
+La table ~SequelizeMeta~ contient la liste des migrations effectuées.
+
+* Utilisation dans une application express
+
+On va créer une application ~express.js~ pour démonter l'utilisation de
+sequelize, et les opérations de base sur les modèles liés à la base de données.
+
+#+BEGIN_SRC shell
+npm install --save express body-parser
+#+END_SRC
+
+~body-parser~ est un middleware qui va décoder automatiquement les corps des
+requêtes http contenant du json ou provenant d'un formulaire html.
+
+Le squelette de l'applicacion, dans le fichier ~server.js~:
+
+#+BEGIN_SRC javascript
+// server.js
+const express = require('express')
+const app = express()
+const db = require(`${__dirname}/lib/models/index.js`)
+const bodyParser = require('body-parser')
+
+app.use(bodyParser.json())
+app.use(bodyParser.urlencoded({ extended: false}))
+
+app.get('/', (req, res) => res.send('ok'))
+
+// rajouter les routes ici
+
+const server = app.listen(3000, function () {
+  var host = server.address().address
+  var port = server.address().port
+  console.log('Example app listening at http://%s:%s', host, port)
+  
+})
+#+END_SRC
+
+
+
+** Création
+
+Toutes les opérations de sequelize sont asynchrones et renvoient des promesses.
+
+Par exemple, pour créer un nouvelle ligne dans une table:
+
+#+BEGIN_SRC javascript
+db.TableName.create({ // js object, properties = table fields})
+  .then((result) => { // sucess})
+  .cach((error) => { // nope })
+#+END_SRC
+
+Commençons par le code suivant, qui va nous permettre de créer un utilisateur:
+
+#+BEGIN_SRC javascript
+app.post('/users', (req, res) => {
+  db.User.create({
+    email: req.body.email
+  }).then(function(user) {
+    res.json(user)
+  })
+})
+#+END_SRC
+
+Pour tester, démarrez le serveur:
+
+#+BEGIN_SRC shell
+node server.js
+#+END_SRC
+
+Et dans un autre terminal:
+
+#+BEGIN_SRC shell
+curl --data "email=pierre.gambarotto@enseeiht.fr" http://127.0.0.1:3000/users
+{"id":1,"email":"pierre.gambarotto@enseeiht.fr","updatedAt":"2016-11-16T03:51:41.542Z","createdAt":"2016-11-16T03:51:41.542Z"}
+#+END_SRC
+
+On peut vérifier qu'une ligne a bien été créée dans la table ~users~:
+
+#+BEGIN_SRC shell
+sqlite3 db/development.sqlite 
+SQLite version 3.14.1 2016-08-11 18:53:32
+Enter ".help" for usage hints.
+sqlite> select * from users;
+1|pierre.gambarotto@enseeiht.fr|2016-11-16 03:51:41.542 +00:00|2016-11-16 03:51:41.542 +00:00
+#+END_SRC
+
+** findAll & find
+Rajoutons maintenant les routes pour créer un todo et afficher tous les todos:
+
+#+BEGIN_SRC javascript
+  // create todo
+  app.post('/todos', (req, res) =>{
+    db.Todo.create({
+      title: req.body.title,
+      UserId: req.body.user_id
+    }).then((todo) =>res.json(todo))
+  })
+
+  //list all todos
+  app.get('/todos', (req, res) =>{
+    db.Todo.findAll({}).then((todos) => res.json(todos))
+  })
+#+END_SRC
+
+Pensez à redémarrer le serveur pour tester:
+
+#+BEGIN_SRC shell
+> curl --data "title=test&user_id=1" http://127.0.0.1:3000/todos
+{"id":1,"title":"test","UserId":"1","updatedAt":"2016-11-16T03:59:45.832Z","createdAt":"2016-11-16T03:59:45.832Z"}
+> curl --data "title=test&user_id=1" http://127.0.0.1:3000/todos
+{"id":2,"title":"test","UserId":"1","updatedAt":"2016-11-16T04:00:05.189Z","createdAt":"2016-11-16T04:00:05.189Z"}
+> sqlite3 db/development.sqlite 'select * from todos'
+1|test||1|2016-11-16 03:59:45.832 +00:00|2016-11-16 03:59:45.832 +00:00
+2|test||1|2016-11-16 04:00:05.189 +00:00|2016-11-16 04:00:05.189 +00:00
+#+END_SRC
+
+La liste des todos à partir du navigateur ~http://127.0.0.1:3000/todos~:
+
+#+BEGIN_SRC json
+[
+
+    {
+        "id": 1,
+        "title": "test",
+        "complete": null,
+        "UserId": 1,
+        "createdAt": "2016-11-16T03:59:45.832Z",
+        "updatedAt": "2016-11-16T03:59:45.832Z"
+    },
+    {
+        "id": 2,
+        "title": "test",
+        "complete": null,
+        "UserId": 1,
+        "createdAt": "2016-11-16T04:00:05.189Z",
+        "updatedAt": "2016-11-16T04:00:05.189Z"
+    }
+
+]
+#+END_SRC
+
+Pour n'extraire qu'une ligne d'une table, et donc ne récupérer qu'un objet
+javascript, on va utiliser ~find~, en spécifiant l'équivalent d'une clause SQL
+~WHERE~:
+
+#+BEGIN_SRC javascript
+// one todo
+app.get('/todos/:id', (req, res) => {
+  db.Todo.find({
+    where: {
+      id: req.params.id
+    }
+  }).then((todo) => todo ? res.json(todo) : res.status(404).json({error: "unknown todo"}))
+})
+#+END_SRC
+
+** Modifier/effacer
+
+Pour mettre à jour un todo
+
+#+BEGIN_SRC javascript
+// update
+app.put('/todo/:id', (req, res) =>{
+  db.Todo.find({
+    where: {
+      id: req.params.id
+    }
+  }).then((todo) => {
+    if(todo){
+      todo.updateAttributes({
+        title: req.body.title,
+        complete: req.body.complete
+      }).then(function(todo) {
+        res.send(todo)
+      })
+    } else
+      res.status(404).json({error: "unknown todo"})
+  })
+})
+
+#+END_SRC
+
+Pour tester:
+
+#+BEGIN_SRC shell
+curl -X PUT --data "complete=true" http://127.0.0.1:3000/todo/2
+#+END_SRC
+
+Et enfin pour effacer:
+
+#+BEGIN_SRC javascript
+// delete todo
+app.delete('/todo/:id', (req, res) => {
+    db.Todo.destroy({
+      where: {
+        id: req.params.id
+      }
+    }).then((todo) => todo ? res.json(todo) : res.status(404).json({error: "unknown todo"}))
+})
+#+END_SRC
+
+#+BEGIN_SRC shell
+curl -X DELETE http://127.0.0.1:3000/todo/2
+#+END_SRC
+
+** Bilan des opérations
+
+Les opérations correspondant à un ~SELECT~ (~find~ et ~findAll) ou à un ~INSERT~
+(~create~) se font sur les modèles, les opérations engendrant un ~UPDATE~
+(~updateAttributes~) ou un ~DROP~ (~destroy~) se font sur une instance.
+
+
+* COMMENT notes
+
+- ~sequelize.sync()~ :: créé les tables manquantes, ~force:true~ : drop les tables
+     existantes avant 
+- [[https://github.com/sequelize/umzug][umzug]] :: gestion des migrations
+- ~sequelize.define()~ :: mapping table <-> modèle, voir la [[http://docs.sequelizejs.com/en/v3/docs/models-definition/][documentation]]
+
+plan:
+
+principe global ORM : table <-> modèle
+une instance du modèle <-> une ligne de la table
+
+création des tables : migrations
+
+les [[http://docs.sequelizejs.com/en/v3/docs/models-usage/][opérations de base]] :
+convention de nommage
+
+
+
+find/findAll
+create
+
+les relations entre modèle
+
+1-1
+1-n
+n-n
+
+tutoriel : http://mherman.org/blog/2015/10/22/node-postgres-sequelize/
+
+nodemon à rajouter
